@@ -219,7 +219,6 @@ class BasicActorCriticAgent:
 
         range for vx is always [-20, 20]
         """
-
         if len(self.reward_history) > 0:
             self.ngames += 1
             self.epsilon = 1 - (self.ngames ** self.decay_rate) / self.max_decay
@@ -294,27 +293,23 @@ class BasicActorCriticAgent:
 class ActorModule(nn.Module):
     def __init__(self, n_input, n_output):
         super(ActorModule, self).__init__()
-        hidden_dim = 512
+        hidden_dim = 256
         self.log_std_min = -20
         self.log_std_max = 2
 
         self.linear1 = nn.Linear(n_input, hidden_dim)
         self.linear2 = nn.Linear(hidden_dim, int(hidden_dim/2))
-        self.linear3 = nn.Linear(int(hidden_dim/2), int(hidden_dim/4))
-        self.linear4 = nn.Linear(int(hidden_dim/4), int(hidden_dim/8))
-        self.linear5 = nn.Linear(int(hidden_dim / 8), int(hidden_dim / 16))
+        self.linear3 = nn.Linear(int(hidden_dim/2), int(hidden_dim/2))
 
         self.log_std_min = self.log_std_min
         self.log_std_max = self.log_std_max
-        self.mean_linear = nn.Linear(int(hidden_dim/16), n_output)
-        self.log_std_linear = nn.Linear(int(hidden_dim/16), n_output)
+        self.mean_linear = nn.Linear(int(hidden_dim/2), n_output)
+        self.log_std_linear = nn.Linear(int(hidden_dim/2), n_output)
 
     def forward(self, state):
         x = F.relu(self.linear1(state))
         x = F.relu(self.linear2(x))
-        x = torch.sigmoid(self.linear3(x))
-        x = F.relu(self.linear4(x))
-        x = F.relu(self.linear5(x))
+        x = F.relu(self.linear3(x))
 
         mean = self.mean_linear(x)
         log_std = self.log_std_linear(x)
@@ -335,30 +330,27 @@ class ActorModule(nn.Module):
 class CriticModule(nn.Module):
     def __init__(self, n_input, n_output):
         super(CriticModule, self).__init__()
-        hidden_dim = 512
+        hidden_dim = 256
         self.linear1 = nn.Linear(n_input, hidden_dim)
         self.linear2 = nn.Linear(hidden_dim, int(hidden_dim/2))
         self.linear3 = nn.Linear(int(hidden_dim/2), int(hidden_dim / 4))
-        self.linear4 = nn.Linear(int(hidden_dim / 4), int(hidden_dim / 8))
-        self.linear5 = nn.Linear(int(hidden_dim/8), n_output)
+        self.linear4 = nn.Linear(int(hidden_dim/4), n_output)
 
     def forward(self, state):
         x = F.relu(self.linear1(state))
         x = F.relu(self.linear2(x))
-        x = torch.sigmoid(self.linear3(x))
-        x = F.relu(self.linear4(x))
-        x = self.linear5(x)
+        x = F.relu(self.linear3(x))
+        x = self.linear4(x)
         return x
 
 
 class SoftQNetwork(nn.Module):
     def __init__(self, n_input, n_output):
         super(SoftQNetwork, self).__init__()
-        hidden_dim = 512
+        hidden_dim = 256
         self.linear1 = nn.Linear(n_input + n_output, hidden_dim)
         self.linear2 = nn.Linear(hidden_dim, int(hidden_dim/2))
-        self.linear3 = nn.Linear(int(hidden_dim/2), int(hidden_dim / 4))
-        self.linear4 = nn.Linear(int(hidden_dim/4), 1)
+        self.linear3 = nn.Linear(int(hidden_dim/2), 1)
 
     def forward(self, state, action):
         if len(action.size()) == 1:
@@ -373,9 +365,8 @@ class SoftQNetwork(nn.Module):
         else:
             x = torch.cat([state, action], 1)
         x = F.relu(self.linear1(x))
-        x = torch.sigmoid(self.linear2(x))
-        x = F.relu(self.linear3(x))
-        x = self.linear4(x)
+        x = F.relu(self.linear2(x))
+        x = self.linear3(x)
         return x
 
 
@@ -384,14 +375,15 @@ class ActorCriticAgent:
         """Init a new agent.
         """
         self.epsilon = 1
-        self.decay_rate = 0.99
-        self.ngames = 0
+        self.decay_rate = 0.9995
+        self.iter = 0
         self.max_decay = 200 ** self.decay_rate
 
         self.game_history = Memory(400)
         self.last_index = -1
         self.won_games = Memory(20000)
-        self.treshold = 50
+        self.treshold = 10
+        self.game_size = 50
         self.lost_games = Memory(100)
         self.batch_size = 4096
 
@@ -422,7 +414,7 @@ class ActorCriticAgent:
         self.value_loss_history = []
         self.soft_q_loss_history = []
 
-    def reset(self, x_range):
+    def reset(self, x_range=[0, 0]):
         """Reset the state of the agent for the start of new game.
 
         Parameters of the environment do not change, but your initial
@@ -432,44 +424,28 @@ class ActorCriticAgent:
 
         range for vx is always [-20, 20]
         """
-
-        if self.last_index >= 0:
-            self.ngames += 1
+        if len(self.game_history.memory) > 0:
             #self.epsilon = 1 - (self.ngames ** self.decay_rate) / self.max_decay
             self.epsilon = self.epsilon*self.decay_rate
             print('epsilon :', self.epsilon)
 
             # Save the game in won_games or lost_games
             reward = self.game_history.get_reward()
-            #TODO : Delete below line
-            self.reward_history.append(sum(reward))
             won = False
             for r in reward:
                 if r >= 80:
                     won = True
                     break
 
-            '''if won:
+            if won and len(self.game_history.memory) <= self.game_size:
                 for m in self.game_history.memory:
                     self.won_games.remember(m)
-            '''
-            if won and len(self.game_history.memory) <= self.treshold:
-                for m in self.game_history.memory:
-                    self.won_games.remember(m)
-            elif won and len(self.game_history.memory) > self.treshold:
-                for i in range(self.treshold):
-                    self.won_games.remember(self.game_history.memory[-self.treshold+i])
+            elif won and len(self.game_history.memory) > self.game_size:
+                for i in range(self.game_size):
+                    self.won_games.remember(self.game_history.memory[i-self.game_size])
             else:
                 for m in self.game_history.memory:
                     self.lost_games.remember(m)
-
-            '''if sum(reward) >= 0:
-                for m in self.game_history.memory:
-                    self.won_games.remember(m)
-                print('won games size:', len(self.won_games.memory))
-            else:
-                for m in self.game_history.memory:
-                    self.lost_games.remember(m)'''
 
             # Update network weights
             if self.batch_size <= len(self.won_games.memory):
@@ -498,6 +474,11 @@ class ActorCriticAgent:
                 reward = np.append(reward, reward2)
                 next_observation = np.append(next_observation, next_observation2, 0)
 
+            '''if self.batch_size <= len(self.game_history.memory):
+                observation, action, reward, next_observation = self.game_history.sample(self.batch_size)
+            else:
+                observation, action, reward, next_observation = self.game_history.sample(len(self.game_history.memory))'''
+
             observation = torch.FloatTensor(observation)
             next_observation = torch.FloatTensor(next_observation)
             action = torch.FloatTensor(action)
@@ -511,8 +492,6 @@ class ActorCriticAgent:
             target_value = self.target_value_net(next_observation)
             target_q_value = reward + self.gamma * target_value
             q_value_loss = self.soft_q_criterion(predicted_q_value, target_q_value.detach())
-            #TODO : Delete below line
-            self.soft_q_loss_history.append(q_value_loss.item())
             self.soft_q_optimizer.zero_grad()
             q_value_loss.backward()
             self.soft_q_optimizer.step()
@@ -522,17 +501,12 @@ class ActorCriticAgent:
                                                               new_action), self.soft_q_net(observation, new_action))
             target_value_func = predicted_new_q_value - log_prob
             value_loss = self.value_criterion(predicted_value, target_value_func.detach())
-            #TODO : Delete below line
-            print(value_loss)
-            self.value_loss_history.append(value_loss.item())
             self.value_optimizer.zero_grad()
             value_loss.backward()
             self.value_optimizer.step()
 
             # Training Policy Function
             policy_loss = (log_prob - predicted_new_q_value).mean()
-            # TODO : Delete below line
-            self.policy_loss_history.append(policy_loss.item())
             self.policy_optimizer.zero_grad()
             policy_loss.backward()
             self.policy_optimizer.step()
@@ -543,16 +517,6 @@ class ActorCriticAgent:
                 )
 
             self.game_history.reset()
-            self.last_index = -1
-
-            # TODO : Delete below lines
-            if self.ngames == 199:
-                import pandas as pd
-                import matplotlib.pyplot as plt
-                data = pd.DataFrame({'policy loss': self.policy_loss_history, 'value loss': self.value_loss_history,
-                                     'q value loss': self.soft_q_loss_history, 'reward': self.reward_history})
-                data.plot()
-                plt.show()
 
     def act(self, observation):
         """Acts given an observation of the environment.
@@ -574,9 +538,14 @@ class ActorCriticAgent:
 
         This is where your agent can learn.
         """
-        if self.last_index >= 0:
-            self.game_history.add_next_observation(self.last_index, observation)
-        self.last_index = self.game_history.remember([observation, action, reward, observation])
+        self.iter += 1
+
+        if len(self.game_history.memory) > 0:
+            self.game_history.add_next_observation(observation)
+        self.game_history.remember([observation, action, reward, observation])
+
+        if self.iter % self.treshold == 0:
+            self.reset()
 
     def learned_act(self, observation):
         state = torch.FloatTensor(observation).unsqueeze(0)
@@ -609,8 +578,8 @@ class Memory(object):
         observation, action, reward, next_observation = map(np.stack, zip(*batch))
         return observation, action, reward, next_observation
 
-    def add_next_observation(self, index, observation):
-        (self.memory[index])[-1] = observation
+    def add_next_observation(self, observation):
+        (self.memory[-1])[-1] = observation
 
     def reset(self):
         self.memory = list()
